@@ -32,6 +32,10 @@ function createRoomCode() {
   return Math.random().toString(36).slice(2, 8).toUpperCase();
 }
 
+function normalizeRoomId(roomId) {
+  return String(roomId ?? "").trim().toUpperCase();
+}
+
 function isRoomActive(roomId) {
   return rooms.get(roomId)?.active === true;
 }
@@ -42,7 +46,7 @@ function roomSize(roomId) {
 
 function relay(roomId, event, payload, socket) {
   logServer(`Relaying ${event}`, { roomId, from: socket.id });
-  socket.to(roomId).emit(event, payload);
+  socket.to(roomId).emit(event, { ...payload, senderId: socket.id });
 }
 
 function markRoomInactive(roomId) {
@@ -163,7 +167,7 @@ io.on("connection", (socket) => {
   });
 
   socket.on("join-room", (payload, ack) => {
-    const roomId = String(payload?.roomId ?? "").trim().toUpperCase();
+    const roomId = normalizeRoomId(payload?.roomId);
 
     if (!roomId) {
       ack?.({ ok: false, error: "Enter a valid room code." });
@@ -193,37 +197,122 @@ io.on("connection", (socket) => {
   });
 
   socket.on("webrtc-offer", (payload) => {
-    const roomId = String(payload?.roomId ?? socket.data.roomId ?? "").trim().toUpperCase();
+    const roomId = normalizeRoomId(payload?.roomId ?? socket.data.roomId);
 
     if (!roomId || !payload?.offer) {
       return;
     }
 
-    relay(roomId, "webrtc-offer", { offer: payload.offer, socketId: socket.id }, socket);
+    relay(roomId, "webrtc-offer", { offer: payload.offer }, socket);
   });
 
   socket.on("webrtc-answer", (payload) => {
-    const roomId = String(payload?.roomId ?? socket.data.roomId ?? "").trim().toUpperCase();
+    const roomId = normalizeRoomId(payload?.roomId ?? socket.data.roomId);
 
     if (!roomId || !payload?.answer) {
       return;
     }
 
-    relay(roomId, "webrtc-answer", { answer: payload.answer, socketId: socket.id }, socket);
+    relay(roomId, "webrtc-answer", { answer: payload.answer }, socket);
   });
 
   socket.on("webrtc-ice-candidate", (payload) => {
-    const roomId = String(payload?.roomId ?? socket.data.roomId ?? "").trim().toUpperCase();
+    const roomId = normalizeRoomId(payload?.roomId ?? socket.data.roomId);
 
     if (!roomId || !payload?.candidate) {
       return;
     }
 
-    relay(roomId, "webrtc-ice-candidate", { candidate: payload.candidate, socketId: socket.id }, socket);
+    relay(roomId, "webrtc-ice-candidate", { candidate: payload.candidate }, socket);
+  });
+
+  socket.on("chat-message", (payload) => {
+    const roomId = normalizeRoomId(payload?.roomId ?? socket.data.roomId);
+
+    if (!roomId || !payload?.message?.trim()) {
+      return;
+    }
+
+    relay(roomId, "receive-message", {
+      message: payload.message,
+      senderName: payload.senderName || "Peer",
+      senderId: socket.id,
+      time: payload.time || new Date().toISOString(),
+    }, socket);
+  });
+
+  socket.on("typing", (payload) => {
+    const roomId = normalizeRoomId(payload?.roomId ?? socket.data.roomId);
+
+    if (!roomId) {
+      return;
+    }
+
+    relay(roomId, "typing", { senderName: payload.senderName || "Peer" }, socket);
+  });
+
+  socket.on("stop-typing", (payload) => {
+    const roomId = normalizeRoomId(payload?.roomId ?? socket.data.roomId);
+
+    if (!roomId) {
+      return;
+    }
+
+    relay(roomId, "stop-typing", { senderName: payload.senderName || "Peer" }, socket);
+  });
+
+  socket.on("audio-toggle", (payload) => {
+    const roomId = normalizeRoomId(payload?.roomId ?? socket.data.roomId);
+
+    if (!roomId) {
+      return;
+    }
+
+    relay(roomId, "audio-toggle", { enabled: !!payload?.enabled }, socket);
+  });
+
+  socket.on("video-toggle", (payload) => {
+    const roomId = normalizeRoomId(payload?.roomId ?? socket.data.roomId);
+
+    if (!roomId) {
+      return;
+    }
+
+    relay(roomId, "video-toggle", { enabled: !!payload?.enabled }, socket);
+  });
+
+  socket.on("file-upload", (payload) => {
+    const roomId = normalizeRoomId(payload?.roomId ?? socket.data.roomId);
+
+    if (!roomId || !payload?.fileId || !payload?.kind) {
+      return;
+    }
+
+    relay(roomId, "file-upload", payload, socket);
+  });
+
+  socket.on("screen-share-start", (payload) => {
+    const roomId = normalizeRoomId(payload?.roomId ?? socket.data.roomId);
+
+    if (!roomId) {
+      return;
+    }
+
+    relay(roomId, "screen-share-start", { active: true }, socket);
+  });
+
+  socket.on("screen-share-stop", (payload) => {
+    const roomId = normalizeRoomId(payload?.roomId ?? socket.data.roomId);
+
+    if (!roomId) {
+      return;
+    }
+
+    relay(roomId, "screen-share-stop", { active: false }, socket);
   });
 
   socket.on("leave-room", (payload) => {
-    const roomId = String(payload?.roomId ?? socket.data.roomId ?? "").trim().toUpperCase();
+    const roomId = normalizeRoomId(payload?.roomId ?? socket.data.roomId);
 
     if (!roomId) {
       return;
