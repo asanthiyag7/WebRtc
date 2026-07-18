@@ -125,7 +125,6 @@ function App() {
   const callStartedRef = useRef(false);
   const isMakingOfferRef = useRef(false);
   const pendingIceCandidatesRef = useRef([]);
-  const fileQueueRef = useRef(Promise.resolve());
   const incomingFilesRef = useRef(new Map());
   const activeIncomingFileIdRef = useRef(null);
   const objectUrlRef = useRef(new Set());
@@ -144,6 +143,7 @@ function App() {
   const [endedRoomCode, setEndedRoomCode] = useState('');
   const [error, setError] = useState('');
   const [draft, setDraft] = useState('');
+  const [pendingAttachment, setPendingAttachment] = useState(null);
   const [peerAudioEnabled, setPeerAudioEnabled] = useState(true);
   const [peerVideoEnabled, setPeerVideoEnabled] = useState(true);
   const [peerScreenSharing, setPeerScreenSharing] = useState(false);
@@ -898,9 +898,11 @@ function App() {
     channel.send(JSON.stringify({ kind: 'file-end', fileId: fileId }));
   }, []);
 
-  const sendMessage = useCallback(() => {
+  const sendMessage = useCallback(async () => {
     const text = draft.trim();
-    if (!text) return;
+    const file = pendingAttachment;
+
+    if (!text && !file) return;
 
     const socket = socketRef.current;
     const roomId = roomIdRef.current;
@@ -909,27 +911,82 @@ function App() {
       return;
     }
 
-    const time = new Date().toISOString();
-    appendMessage({
-      id: createId('msg'),
-      type: 'text',
-      senderName: 'You',
-      text: text,
-      outgoing: true,
-      time: time,
-    });
+    if (text) {
+      const time = new Date().toISOString();
+      appendMessage({
+        id: createId('msg'),
+        type: 'text',
+        senderName: 'You',
+        text: text,
+        outgoing: true,
+        time: time,
+      });
 
-    socket.emit('chat-message', {
-      roomId: roomId,
-      message: text,
-      senderName: 'You',
-      time: time,
-    });
+      socket.emit('chat-message', {
+        roomId: roomId,
+        message: text,
+        senderName: 'You',
+        time: time,
+      });
+    }
+
+    if (file) {
+      setPendingAttachment(null);
+      try {
+        const transport = dataChannelRef.current && dataChannelRef.current.readyState === 'open' ? 'datachannel' : 'socket';
+        const fileId = createId('file');
+        const time = new Date().toISOString();
+        const localFileUrl = URL.createObjectURL(file);
+        objectUrlRef.current.add(localFileUrl);
+
+        const message = appendMessage({
+          id: fileId,
+          type: 'file',
+          senderName: 'You',
+          text: '',
+          outgoing: true,
+          time: time,
+          status: 'sending',
+          fileId: fileId,
+          fileName: file.name,
+          fileSize: file.size,
+          fileType: file.type,
+          fileUrl: localFileUrl,
+          previewUrl: isImageFile(file.type, file.name) ? localFileUrl : undefined,
+        });
+
+        socket.emit('file-upload', {
+          roomId: roomId,
+          fileId: fileId,
+          transfer: 'meta',
+          fileName: file.name,
+          fileSize: file.size,
+          fileType: file.type,
+          senderName: 'You',
+          time: time,
+          transport: transport,
+        });
+
+        if (transport === 'datachannel') {
+          await sendFileViaDataChannel(fileId, file);
+        } else {
+          await sendFileViaSocket(fileId, file);
+        }
+
+        updateMessage(message.id, { status: 'sent' });
+        setStatus('Sent ' + file.name + '.');
+      } catch (err) {
+        setPendingAttachment(file);
+        setError(formatError(err));
+        setStatus('File transfer failed.');
+        return;
+      }
+    }
 
     setDraft('');
     stopTyping(emitStopTyping);
     markChatRead();
-  }, [appendMessage, draft, emitStopTyping, markChatRead, stopTyping]);
+  }, [appendMessage, draft, emitStopTyping, markChatRead, pendingAttachment, sendFileViaDataChannel, sendFileViaSocket, stopTyping, updateMessage]);
 
   const handleDraftChange = useCallback(
     (value) => {
@@ -965,65 +1022,11 @@ function App() {
         return;
       }
 
-      const socket = socketRef.current;
-      const roomId = roomIdRef.current;
-      const transport = dataChannelRef.current && dataChannelRef.current.readyState === 'open' ? 'datachannel' : 'socket';
-
-      if (!socket || !socket.connected || !roomId) {
-        setError('Join a room before sending files.');
-        return;
-      }
-
-      const fileId = createId('file');
-      const time = new Date().toISOString();
-      const localFileUrl = URL.createObjectURL(file);
-      objectUrlRef.current.add(localFileUrl);
-
-      const message = appendMessage({
-        id: fileId,
-        type: 'file',
-        senderName: 'You',
-        text: '',
-        outgoing: true,
-        time: time,
-        status: 'sending',
-        fileId: fileId,
-        fileName: file.name,
-        fileSize: file.size,
-        fileType: file.type,
-        fileUrl: localFileUrl,
-        previewUrl: isImageFile(file.type, file.name) ? localFileUrl : undefined,
-      });
-
-      socket.emit('file-upload', {
-        roomId: roomId,
-        fileId: fileId,
-        transfer: 'meta',
-        fileName: file.name,
-        fileSize: file.size,
-        fileType: file.type,
-        senderName: 'You',
-        time: time,
-        transport: transport,
-      });
-
-      fileQueueRef.current = fileQueueRef.current
-        .then(async () => {
-          if (transport === 'datachannel') {
-            await sendFileViaDataChannel(fileId, file);
-          } else {
-            await sendFileViaSocket(fileId, file);
-          }
-          updateMessage(message.id, { status: 'sent' });
-          setStatus('Sent ' + file.name + '.');
-        })
-        .catch((err) => {
-          updateMessage(message.id, { status: 'failed' });
-          setError(formatError(err));
-          setStatus('File transfer failed.');
-        });
+      setError('');
+      setPendingAttachment(file);
+      setStatus('File attached. Click Send to share it.');
     },
-    [appendMessage, sendFileViaDataChannel, sendFileViaSocket, updateMessage],
+    [],
   );
 
   const socketStatusMeta = useMemo(() => getSocketStatusMeta(socketState), [socketState]);
@@ -1333,7 +1336,8 @@ useEffect(() => {
               draft={draft}
               onDraftChange={handleDraftChange}
               onSendMessage={sendMessage}
-              onAttachFile={handleFileAttach}
+              pendingAttachment={pendingAttachment}
+              onAttachFileSelect={handleFileAttach}
               onEmojiClick={handleEmojiClick}
               peerTyping={peerTyping}
               unreadCount={unreadCount}
@@ -1428,6 +1432,14 @@ useEffect(() => {
 }
 
 export default App;
+
+
+
+
+
+
+
+
 
 
 

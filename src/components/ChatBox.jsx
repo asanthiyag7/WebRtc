@@ -7,9 +7,10 @@ const ACCEPTED_FILE_TYPES = ".png,.jpg,.jpeg,.gif,.webp,.pdf,.doc,.docx,.zip,.tx
 export default function ChatBox({
   messages,
   draft,
+  pendingAttachment,
   onDraftChange,
   onSendMessage,
-  onAttachFile,
+  onAttachFileSelect,
   onEmojiClick,
   peerTyping,
   unreadCount,
@@ -29,7 +30,7 @@ export default function ChatBox({
     event.target.value = "";
 
     if (file) {
-      onAttachFile?.(file);
+      onAttachFileSelect?.(file);
     }
   };
 
@@ -93,10 +94,17 @@ export default function ChatBox({
           onBlur={onBlur}
           onKeyDown={handleKeyDown}
         />
-        <button type="button" className="chat-send" onClick={onSendMessage} disabled={!draft.trim()}>
+        <button type="button" className="chat-send" onClick={onSendMessage} disabled={!draft.trim() && !pendingAttachment}>
           Send
         </button>
       </footer>
+
+      {pendingAttachment ? (
+        <div className="chat-attachment-preview" aria-live="polite">
+          <span>{pendingAttachment.name}</span>
+          <span>{(pendingAttachment.size / (1024 * 1024)).toFixed(1)} MB</span>
+        </div>
+      ) : null}
     </section>
   );
 }
